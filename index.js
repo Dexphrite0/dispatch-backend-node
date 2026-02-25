@@ -336,12 +336,7 @@ app.get("/api/chat/conversations/:userId", async (req, res) => {
 });
 
 app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
-  const limit = parseInt(req.query.limit) || 50;
-  const before = req.query.before ? parseInt(req.query.before) : null;
-  const query = { conversation_id: req.params.convId };
-  if (before) query.timestamp = { $lt: before };
-  const msgs = await ChatMessage.find(query).sort({ timestamp: -1 }).limit(limit);
-  msgs.reverse();
+  const msgs = await ChatMessage.find({ conversation_id: req.params.convId }).sort({ timestamp: 1 });
   res.json(msgs.map(m => ({ _id: m._id.toString(), conversation_id: m.conversation_id, sender_id: m.sender_id, content: m.content, timestamp: m.timestamp, read: m.read, deleted: m.deleted, reply_to: m.reply_to })));
 });
 
