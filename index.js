@@ -309,6 +309,20 @@ app.post("/api/chat/send", async (req, res) => {
   res.json({ message: msgData });
 });
 
+
+//// read
+
+app.post("/api/chat/conversation/:convId/read", async (req, res) => {
+  const { reader_id } = req.body;
+  const convId = req.params.convId;
+  await ChatMessage.updateMany(
+    { conversation_id: convId, sender_id: { $ne: reader_id }, read: false },
+    { $set: { read: true } }
+  );
+  await Conversation.updateOne({ _id: convId }, { $set: { [`unread.${reader_id}`]: 0 } });
+  res.json({ message: "Marked as read" });
+});
+
 app.get("/api/chat/users/:userId", async (req, res) => {
   const user = await User.findById(req.params.userId).catch(() => null);
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -323,17 +337,26 @@ app.get("/api/chat/users/:userId", async (req, res) => {
 app.get("/api/chat/conversations/:userId", async (req, res) => {
   const uid = req.params.userId;
   const convs = await Conversation.find({ participants: uid }).sort({ last_message_time: -1 });
-  const result = [];
-  for (const conv of convs) {
+  
+  // Get all other user IDs at once
+  const otherIds = convs.map(c => c.participants.find(p => p !== uid)).filter(Boolean);
+  
+  // ONE query to get all users instead of 50 separate queries
+  const users = await User.find({ _id: { $in: otherIds } });
+  const userMap = {};
+  users.forEach(u => { userMap[u._id.toString()] = u; });
+
+  const result = convs.map(conv => {
     const otherId = conv.participants.find(p => p !== uid);
-    if (!otherId) continue;
-    const other = await User.findById(otherId).catch(() => null);
-    if (!other) continue;
+    const other = userMap[otherId];
+    if (!other) return null;
     const unread = conv.unread?.[uid] || 0;
-    result.push({ conversation_id: conv._id.toString(), other_user: { _id: otherId, firstName: other.firstName, lastName: other.lastName, role: other.role, profilePic: other.profilePic, online: other.online || false, last_seen: other.last_seen }, last_message: conv.last_message, last_message_time: conv.last_message_time, last_message_sender: conv.last_message_sender, unread });
-  }
+    return { conversation_id: conv._id.toString(), other_user: { _id: otherId, firstName: other.firstName, lastName: other.lastName, role: other.role, profilePic: other.profilePic, online: other.online || false, last_seen: other.last_seen }, last_message: conv.last_message, last_message_time: conv.last_message_time, last_message_sender: conv.last_message_sender, unread };
+  }).filter(Boolean);
+
   res.json(result);
 });
+
 
 app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
   const msgs = await ChatMessage.find({ conversation_id: req.params.convId }).sort({ timestamp: 1 });
