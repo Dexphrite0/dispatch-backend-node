@@ -3,15 +3,14 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
-const { WebSocketServer } = require("ws");
-const http = require("http");
+const Ably = require("ably");
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
-
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: "20mb" }));
+
+// ── Ably REST client ──────────────────────────────────────────────────────
+const ably = new Ably.Rest({ key: process.env.ABLY_API_KEY });
 
 // ── MongoDB connection ────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URL).then(() => console.log("✓ MongoDB connected"));
@@ -60,115 +59,17 @@ function formatRelative(ts) {
   return `${Math.floor(diff/2592000)} months ago`;
 }
 
-// ── WebSocket connections map ─────────────────────────────────────────────
-const connections = new Map(); // userId -> ws
-
-async function sendOnlineStatus(userId, online, last_seen) {
+// ── Notify all conversation partners about online status via Ably ─────────
+async function broadcastOnlineStatus(userId, online, last_seen) {
   const convs = await Conversation.find({ participants: userId });
-  const payload = JSON.stringify({ type: "online_status", user_id: userId, online, last_seen });
   for (const conv of convs) {
     for (const pid of conv.participants) {
-      if (pid !== userId && connections.has(pid)) {
-        connections.get(pid).send(payload);
+      if (pid !== userId) {
+        ably.channels.get(`user-${pid}`).publish("online_status", { user_id: userId, online, last_seen });
       }
     }
   }
 }
-
-async function processWSEvent(senderId, text, ws) {
-  let ev;
-  try { ev = JSON.parse(text); } catch { return; }
-
-  switch (ev.type) {
-    case "ping": ws.send(JSON.stringify({ type: "pong" })); break;
-    case "message":     await wsSendMessage(senderId, ev); break;
-    case "typing":      wsForwardTyping(senderId, ev, true); break;
-    case "stop_typing": wsForwardTyping(senderId, ev, false); break;
-    case "read":        await wsReadReceipt(senderId, ev); break;
-    case "delete":      await wsDeleteMessage(senderId, ev); break;
-  }
-}
-
-async function wsSendMessage(senderId, ev) {
-  const { to, content, temp_id, reply_to } = ev;
-  if (!to || !content?.trim()) return;
-  const timestamp = Date.now();
-
-  let conv = await Conversation.findOne({ participants: { $all: [senderId, to], $size: 2 } });
-  if (!conv) {
-    conv = await Conversation.create({ participants: [senderId, to], last_message: content, last_message_time: timestamp, last_message_sender: senderId, unread: {} });
-  }
-  const convId = conv._id.toString();
-
-  const msg = await ChatMessage.create({ conversation_id: convId, sender_id: senderId, content, timestamp, read: false, deleted: false, reply_to: reply_to || null });
-  const msgId = msg._id.toString();
-
-  await Conversation.updateOne(
-    { _id: conv._id },
-    { $set: { last_message: content, last_message_time: timestamp, last_message_sender: senderId }, $inc: { [`unread.${to}`]: 1 } }
-  );
-
-  const msgData = { _id: msgId, conversation_id: convId, sender_id: senderId, content, timestamp, read: false, deleted: false, reply_to: reply_to || null };
-
-  if (connections.has(senderId)) connections.get(senderId).send(JSON.stringify({ type: "sent", data: msgData, temp_id }));
-  if (connections.has(to))       connections.get(to).send(JSON.stringify({ type: "message", data: msgData }));
-}
-
-function wsForwardTyping(senderId, ev, isTyping) {
-  const { to } = ev;
-  if (!to || !connections.has(to)) return;
-  connections.get(to).send(JSON.stringify({ type: isTyping ? "typing" : "stop_typing", from: senderId }));
-}
-
-async function wsReadReceipt(readerId, ev) {
-  const { conversation_id } = ev;
-  if (!conversation_id) return;
-  await ChatMessage.updateMany({ conversation_id, sender_id: { $ne: readerId }, read: false, deleted: false }, { $set: { read: true } });
-  await Conversation.updateOne({ _id: conversation_id }, { $set: { [`unread.${readerId}`]: 0 } });
-
-  const conv = await Conversation.findById(conversation_id);
-  if (!conv) return;
-  const payload = JSON.stringify({ type: "read", conversation_id, reader_id: readerId });
-  for (const pid of conv.participants) {
-    if (pid !== readerId && connections.has(pid)) connections.get(pid).send(payload);
-  }
-}
-
-async function wsDeleteMessage(userId, ev) {
-  const { message_id, conversation_id } = ev;
-  if (!message_id || !conversation_id) return;
-  const result = await ChatMessage.updateOne({ _id: message_id, sender_id: userId }, { $set: { deleted: true, content: "This message was deleted" } });
-  if (!result.modifiedCount) return;
-
-  const payload = JSON.stringify({ type: "deleted", message_id, conversation_id });
-  const conv = await Conversation.findById(conversation_id);
-  if (!conv) return;
-  for (const pid of conv.participants) {
-    if (connections.has(pid)) connections.get(pid).send(payload);
-  }
-}
-
-// ── WebSocket upgrade ─────────────────────────────────────────────────────
-wss.on("connection", async (ws, req) => {
-  const userId = req.url.split("/ws/")[1];
-  if (!userId) return ws.close();
-
-  connections.set(userId, ws);
-  await User.updateOne({ _id: userId }, { $set: { online: true } }).catch(() => {});
-  await sendOnlineStatus(userId, true, null);
-
-  const heartbeat = setInterval(() => { if (ws.readyState === ws.OPEN) ws.ping(); }, 25000);
-
-  ws.on("message", (data) => processWSEvent(userId, data.toString(), ws));
-  ws.on("close", async () => {
-    clearInterval(heartbeat);
-    connections.delete(userId);
-    const now = Date.now();
-    await User.updateOne({ _id: userId }, { $set: { online: false, last_seen: now } }).catch(() => {});
-    await sendOnlineStatus(userId, false, now);
-  });
-  ws.on("error", () => {});
-});
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 app.post("/api/signup", async (req, res) => {
@@ -196,6 +97,20 @@ app.post("/api/set-role", async (req, res) => {
   const result = await User.updateOne({ _id: user_id }, { $set: { role } });
   if (!result.modifiedCount) return res.status(400).json({ error: "User not found" });
   res.json({ message: `Role set to ${role}` });
+});
+
+// ── Online status ─────────────────────────────────────────────────────────
+app.post("/api/user/:id/online", async (req, res) => {
+  await User.updateOne({ _id: req.params.id }, { $set: { online: true } }).catch(() => {});
+  broadcastOnlineStatus(req.params.id, true, null);
+  res.json({ message: "Online" });
+});
+
+app.post("/api/user/:id/offline", async (req, res) => {
+  const now = Date.now();
+  await User.updateOne({ _id: req.params.id }, { $set: { online: false, last_seen: now } }).catch(() => {});
+  broadcastOnlineStatus(req.params.id, false, now);
+  res.json({ message: "Offline" });
 });
 
 // ── User ──────────────────────────────────────────────────────────────────
@@ -288,7 +203,7 @@ app.post("/api/admin/send-email", async (req, res) => {
   res.json({ message: "Email sent", count: sent, requested: userIds.length });
 });
 
-// ── Chat HTTP ─────────────────────────────────────────────────────────────
+// ── Chat ──────────────────────────────────────────────────────────────────
 app.post("/api/chat/send", async (req, res) => {
   const { to, content, sender_id, reply_to } = req.body;
   if (!content?.trim()) return res.status(400).json({ error: "Empty message" });
@@ -299,37 +214,31 @@ app.post("/api/chat/send", async (req, res) => {
   const convId = conv._id.toString();
 
   const msg = await ChatMessage.create({ conversation_id: convId, sender_id, content, timestamp, read: false, deleted: false, reply_to: reply_to || null });
-  const msgId = msg._id.toString();
+  const msgData = { _id: msg._id.toString(), conversation_id: convId, sender_id, content, timestamp, read: false, deleted: false, reply_to: reply_to || null };
 
   await Conversation.updateOne({ _id: conv._id }, { $set: { last_message: content, last_message_time: timestamp, last_message_sender: sender_id }, $inc: { [`unread.${to}`]: 1 } });
-
-  const msgData = { _id: msgId, conversation_id: convId, sender_id, content, timestamp, read: false, deleted: false, reply_to: reply_to || null };
-  if (connections.has(to)) connections.get(to).send(JSON.stringify({ type: "message", data: msgData }));
 
   res.json({ message: msgData });
 });
 
-
-//// read
-
 app.post("/api/chat/conversation/:convId/read", async (req, res) => {
   const { reader_id } = req.body;
   const convId = req.params.convId;
-  await ChatMessage.updateMany(
-    { conversation_id: convId, sender_id: { $ne: reader_id }, read: false },
-    { $set: { read: true } }
-  );
+  await ChatMessage.updateMany({ conversation_id: convId, sender_id: { $ne: reader_id }, read: false }, { $set: { read: true } });
   await Conversation.updateOne({ _id: convId }, { $set: { [`unread.${reader_id}`]: 0 } });
   res.json({ message: "Marked as read" });
+});
+
+app.delete("/api/chat/message/:msgId", async (req, res) => {
+  await ChatMessage.updateOne({ _id: req.params.msgId }, { $set: { deleted: true, content: "This message was deleted" } });
+  res.json({ message: "Deleted" });
 });
 
 app.get("/api/chat/users/:userId", async (req, res) => {
   const user = await User.findById(req.params.userId).catch(() => null);
   if (!user) return res.status(404).json({ error: "User not found" });
-
   const allowed = { customer: ["management"], management: ["customer", "admin"], admin: ["management", "customer"] }[user.role] || [];
   if (!allowed.length) return res.json([]);
-
   const users = await User.find({ role: { $in: allowed }, _id: { $ne: user._id } });
   res.json(users.map(u => ({ _id: u._id, firstName: u.firstName, lastName: u.lastName, role: u.role, profilePic: u.profilePic, online: u.online || false, last_seen: u.last_seen })));
 });
@@ -337,15 +246,10 @@ app.get("/api/chat/users/:userId", async (req, res) => {
 app.get("/api/chat/conversations/:userId", async (req, res) => {
   const uid = req.params.userId;
   const convs = await Conversation.find({ participants: uid }).sort({ last_message_time: -1 });
-  
-  // Get all other user IDs at once
   const otherIds = convs.map(c => c.participants.find(p => p !== uid)).filter(Boolean);
-  
-  // ONE query to get all users instead of 50 separate queries
   const users = await User.find({ _id: { $in: otherIds } });
   const userMap = {};
   users.forEach(u => { userMap[u._id.toString()] = u; });
-
   const result = convs.map(conv => {
     const otherId = conv.participants.find(p => p !== uid);
     const other = userMap[otherId];
@@ -353,10 +257,8 @@ app.get("/api/chat/conversations/:userId", async (req, res) => {
     const unread = conv.unread?.[uid] || 0;
     return { conversation_id: conv._id.toString(), other_user: { _id: otherId, firstName: other.firstName, lastName: other.lastName, role: other.role, profilePic: other.profilePic, online: other.online || false, last_seen: other.last_seen }, last_message: conv.last_message, last_message_time: conv.last_message_time, last_message_sender: conv.last_message_sender, unread };
   }).filter(Boolean);
-
   res.json(result);
 });
-
 
 app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
   const msgs = await ChatMessage.find({ conversation_id: req.params.convId }).sort({ timestamp: 1 });
@@ -368,4 +270,4 @@ app.get("/", (req, res) => res.json({ status: "ok" }));
 
 // ── Start ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 8000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
