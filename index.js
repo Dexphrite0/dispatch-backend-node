@@ -4,6 +4,22 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const Ably = require("ably");
+const cloudinary = require("cloudinary").v2;
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Helper: upload base64 image to Cloudinary, return URL
+async function uploadImage(base64, folder = "dispatch") {
+  if (!base64) return null;
+  // Already a URL (already migrated) — return as-is
+  if (base64.startsWith("http")) return base64;
+  const result = await cloudinary.uploader.upload(base64, { folder, resource_type: "image" });
+  return result.secure_url;
+}
 
 const app = express();
 app.use(cors({ origin: "*", credentials: true }));
