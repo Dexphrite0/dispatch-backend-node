@@ -137,8 +137,10 @@ app.get("/api/user/:id", async (req, res) => {
 });
 
 app.post("/api/user/:id/profile-pic", async (req, res) => {
-  await User.updateOne({ _id: req.params.id }, { $set: { profilePic: req.body.profilePic } });
-  res.json({ message: "Profile pic saved" });
+  const url = await uploadImage(req.body.profilePic, "dispatch/avatars");
+  if (!url) return res.status(400).json({ error: "Upload failed" });
+  await User.updateOne({ _id: req.params.id }, { $set: { profilePic: url } });
+  res.json({ message: "Profile pic saved", url });
 });
 
 app.post("/api/user/:id/background", async (req, res) => {
@@ -147,8 +149,10 @@ app.post("/api/user/:id/background", async (req, res) => {
 });
 
 app.post("/api/user/:id/cover-image", async (req, res) => {
-  await User.updateOne({ _id: req.params.id }, { $set: { coverImage: req.body.coverImage } });
-  res.json({ message: "Cover image saved" });
+  const url = await uploadImage(req.body.coverImage, "dispatch/covers");
+  if (!url) return res.status(400).json({ error: "Upload failed" });
+  await User.updateOne({ _id: req.params.id }, { $set: { coverImage: url } });
+  res.json({ message: "Cover image saved", url });
 });
 
 app.post("/api/user/:id/profile", async (req, res) => {
