@@ -163,8 +163,15 @@ app.post("/api/user/:id/profile", async (req, res) => {
 });
 
 app.get("/api/users", async (req, res) => {
-  const users = await User.find({}, "_id firstName lastName email role");
-  res.json(users.map(u => ({ _id: u._id, firstName: u.firstName, lastName: u.lastName, email: u.email, role: u.role })));
+  const users = await User.find({}, "_id firstName lastName email role profilePic");
+  res.json(users.map(u => ({
+    _id: u._id,
+    firstName: u.firstName,
+    lastName: u.lastName,
+    email: u.email,
+    role: u.role,
+    profilePic: u.profilePic?.startsWith('http') ? u.profilePic : null,
+  })));
 });
 
 // ── Messages (inbox) ──────────────────────────────────────────────────────
