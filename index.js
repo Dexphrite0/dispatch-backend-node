@@ -62,6 +62,23 @@ const Conversation = mongoose.model("conversations", ConversationSchema);
 const ViewedEmailSchema = new mongoose.Schema({ user_id: String, emailIds: [String] });
 const ViewedEmail = mongoose.model("viewed_emails", ViewedEmailSchema);
 
+const IncidentSchema = new mongoose.Schema({
+  title:       { type: String, required: true },
+  description: { type: String, required: true },
+  priority:    { type: String, enum: ["low","medium","high","critical"], default: "medium" },
+  status:      { type: String, enum: ["open","in_progress","resolved","closed"], default: "open" },
+  category:    { type: String, default: "General" },
+  created_by:  { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  assigned_to: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  comments: [{
+    content: String, author_id: mongoose.Schema.Types.ObjectId,
+    author_name: String, created_at: { type: Date, default: Date.now },
+  }],
+  created_at: { type: Date, default: Date.now },
+  updated_at: { type: Date, default: Date.now },
+});
+const Incident = mongoose.model("Incident", IncidentSchema);
+
 // ── Timestamp helpers ─────────────────────────────────────────────────────
 function formatTimestamp(ts) {
   return new Date(ts).toLocaleString("en-US", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -319,6 +336,139 @@ last_seen: other.last_seen },
 app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
   const msgs = await ChatMessage.find({ conversation_id: req.params.convId }).sort({ timestamp: 1 });
   res.json(msgs.map(m => ({ _id: m._id.toString(), conversation_id: m.conversation_id, sender_id: m.sender_id, content: m.content, timestamp: m.timestamp, read: m.read, deleted: m.deleted, reply_to: m.reply_to })));
+});
+
+app.get("/api/incidents/user/:userId", async (req, res) => {
+  try {
+    const incidents = await Incident.find({ created_by: req.params.userId })
+      .sort({ created_at: -1 })
+      .populate("assigned_to", "firstName lastName")
+      .lean();
+    res.json(incidents);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch incidents" });
+  }
+});
+
+// GET — all incidents (management/admin view)
+app.get("/api/incidents", async (req, res) => {
+  try {
+    const { status, priority, assigned_to } = req.query;
+    const filter = {};
+    if (status)      filter.status      = status;
+    if (priority)    filter.priority    = priority;
+    if (assigned_to) filter.assigned_to = assigned_to;
+
+    const incidents = await Incident.find(filter)
+      .sort({ created_at: -1 })
+      .populate("created_by",  "firstName lastName role profilePic")
+      .populate("assigned_to", "firstName lastName role profilePic")
+      .lean();
+    res.json(incidents);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch incidents" });
+  }
+});
+
+// POST — create a new incident
+app.post("/api/incidents", async (req, res) => {
+  try {
+    const { title, description, priority, category, created_by } = req.body;
+    if (!title || !description || !created_by) {
+      return res.status(400).json({ error: "title, description and created_by are required" });
+    }
+    const incident = await Incident.create({ title, description, priority, category, created_by });
+    const populated = await incident.populate("assigned_to", "firstName lastName");
+    res.json({ incident: populated });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create incident" });
+  }
+});
+
+// PATCH — update incident status
+app.patch("/api/incidents/:id/status", async (req, res) => {
+  try {
+    const { status } = req.body;
+    const allowed = ["open", "in_progress", "resolved", "closed"];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+    const incident = await Incident.findByIdAndUpdate(
+      req.params.id,
+      { status, updated_at: Date.now() },
+      { new: true }
+    ).populate("assigned_to", "firstName lastName").lean();
+    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    res.json({ incident });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update status" });
+  }
+});
+
+// PATCH — assign incident to a professional (management/admin)
+app.patch("/api/incidents/:id/assign", async (req, res) => {
+  try {
+    const { assigned_to } = req.body;
+    const incident = await Incident.findByIdAndUpdate(
+      req.params.id,
+      { assigned_to, status: "in_progress", updated_at: Date.now() },
+      { new: true }
+    )
+      .populate("created_by",  "firstName lastName role profilePic")
+      .populate("assigned_to", "firstName lastName role profilePic")
+      .lean();
+    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    res.json({ incident });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to assign incident" });
+  }
+});
+
+// GET — comments for an incident
+app.get("/api/incidents/:id/comments", async (req, res) => {
+  try {
+    const incident = await Incident.findById(req.params.id).select("comments").lean();
+    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    res.json(incident.comments || []);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch comments" });
+  }
+});
+
+// POST — add a comment to an incident
+app.post("/api/incidents/:id/comments", async (req, res) => {
+  try {
+    const { content, author_id } = req.body;
+    if (!content || !author_id) {
+      return res.status(400).json({ error: "content and author_id are required" });
+    }
+    // get author name
+    const author = await User.findById(author_id).select("firstName lastName").lean();
+    const author_name = author ? `${author.firstName} ${author.lastName}` : "Unknown";
+
+    const newComment = { content, author_id, author_name, created_at: new Date() };
+    const incident = await Incident.findByIdAndUpdate(
+      req.params.id,
+      { $push: { comments: newComment }, updated_at: Date.now() },
+      { new: true }
+    ).lean();
+    if (!incident) return res.status(404).json({ error: "Incident not found" });
+
+    const added = incident.comments[incident.comments.length - 1];
+    res.json({ comment: added });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to add comment" });
+  }
+});
+
+// DELETE — delete an incident (admin only)
+app.delete("/api/incidents/:id", async (req, res) => {
+  try {
+    await Incident.findByIdAndDelete(req.params.id);
+    res.json({ message: "Incident deleted" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete incident" });
+  }
 });
 
 // ── Health check ──────────────────────────────────────────────────────────
