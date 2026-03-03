@@ -338,15 +338,17 @@ app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
   res.json(msgs.map(m => ({ _id: m._id.toString(), conversation_id: m.conversation_id, sender_id: m.sender_id, content: m.content, timestamp: m.timestamp, read: m.read, deleted: m.deleted, reply_to: m.reply_to })));
 });
 
-app.get("/api/incidents/user/:userId", async (req, res) => {
+app.post("/api/incidents", async (req, res) => {
   try {
-    const incidents = await Incident.find({ created_by: req.params.userId })
-      .sort({ created_at: -1 })
-      .populate("assigned_to", "firstName lastName")
-      .lean();
-    res.json(incidents);
+    const { title, description, priority, category, created_by } = req.body;
+    if (!title || !description || !created_by) {
+      return res.status(400).json({ error: "title, description and created_by are required" });
+    }
+    const incident = await Incident.create({ title, description, priority, category, created_by });
+    res.json({ incident });
   } catch (err) {
-    res.status(500).json({ error: "Failed to fetch incidents" });
+    console.error(err);
+    res.status(500).json({ error: "Failed to create incident" });
   }
 });
 
