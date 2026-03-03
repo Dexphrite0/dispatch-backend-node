@@ -223,6 +223,32 @@ app.post("/api/admin/send-email", async (req, res) => {
   res.json({ message: "Email sent", count: sent, requested: userIds.length });
 });
 
+
+// ── Management ────────────────────────────────────────────────────────────
+app.post("/api/management/send-email", async (req, res) => {
+  const { subject, body, userIds, from } = req.body;
+  let sent = 0;
+  for (const uid of userIds) {
+    const ts = Date.now();
+    await Message.create({
+      user_id: uid,
+      id: `management-email-${ts}`,
+      from,                          // "Management Team"
+      subject,
+      preview: body.slice(0, 100),
+      body,
+      timestamp: "just now",
+      createdAt: ts,
+      unread: true,
+      starred: false,
+      role: "management",            // 👈 labeled as management (not admin)
+      isManagement: true             // 👈 management flag
+    });
+    sent++;
+  }
+  res.json({ message: "Email sent", count: sent, requested: userIds.length });
+});
+
 // ── Chat ──────────────────────────────────────────────────────────────────
 app.post("/api/chat/send", async (req, res) => {
   const { to, content, sender_id, reply_to } = req.body;
