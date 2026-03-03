@@ -308,7 +308,10 @@ app.get("/api/chat/conversations/:userId", async (req, res) => {
     const other = userMap[otherId];
     if (!other) return null;
     const unread = conv.unread?.[uid] || 0;
-    return { conversation_id: conv._id.toString(), other_user: { _id: otherId, firstName: other.firstName, lastName: other.lastName, role: other.role, profilePic: other.profilePic?.startsWith('http') ? other.profilePic : null, online: other.online || false, last_seen: other.last_seen }, last_message: conv.last_message, last_message_time: conv.last_message_time, last_message_sender: conv.last_message_sender, unread };
+    return { conversation_id: conv._id.toString(), other_user: { _id: otherId, firstName: other.firstName, lastName: other.lastName, role: other.role, profilePic: other.profilePic?.startsWith('http') ? other.profilePic : null, 
+      online: other.online && other.last_seen && (Date.now() - other.last_seen < 120000) ? true : (other.online && !other.last_seen ? true : false),
+last_seen: other.last_seen },
+       last_message: conv.last_message, last_message_time: conv.last_message_time, last_message_sender: conv.last_message_sender, unread };
   }).filter(Boolean);
   res.json(result);
 });
