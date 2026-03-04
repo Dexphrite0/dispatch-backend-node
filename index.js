@@ -12,10 +12,8 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Helper: upload base64 image to Cloudinary, return URL
 async function uploadImage(base64, folder = "dispatch") {
   if (!base64) return null;
-  // Already a URL (already migrated) — return as-is
   if (base64.startsWith("http")) return base64;
   const result = await cloudinary.uploader.upload(base64, { folder, resource_type: "image" });
   return result.secure_url;
@@ -25,10 +23,8 @@ const app = express();
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: "20mb" }));
 
-// ── Ably REST client ──────────────────────────────────────────────────────
 const ably = new Ably.Rest({ key: process.env.ABLY_API_KEY });
 
-// ── MongoDB connection ────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URL).then(() => console.log("✓ MongoDB connected"));
 
 // ── Schemas ───────────────────────────────────────────────────────────────
@@ -68,10 +64,10 @@ const IncidentSchema = new mongoose.Schema({
   priority:    { type: String, enum: ["low","medium","high","critical"], default: "medium" },
   status:      { type: String, enum: ["open","in_progress","resolved","closed"], default: "open" },
   category:    { type: String, default: "General" },
-  created_by:  { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  assigned_to: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  created_by:  { type: String, required: true },
+  assigned_to: { type: String, default: null },
   comments: [{
-    content: String, author_id: mongoose.Schema.Types.ObjectId,
+    content: String, author_id: String,
     author_name: String, created_at: { type: Date, default: Date.now },
   }],
   created_at: { type: Date, default: Date.now },
@@ -79,7 +75,7 @@ const IncidentSchema = new mongoose.Schema({
 });
 const Incident = mongoose.model("Incident", IncidentSchema);
 
-// ── Timestamp helpers ─────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 function formatTimestamp(ts) {
   return new Date(ts).toLocaleString("en-US", { month: "short", day: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
@@ -92,7 +88,6 @@ function formatRelative(ts) {
   return `${Math.floor(diff/2592000)} months ago`;
 }
 
-// ── Notify all conversation partners about online status via Ably ─────────
 async function broadcastOnlineStatus(userId, online, last_seen) {
   const convs = await Conversation.find({ participants: userId });
   for (const conv of convs) {
@@ -181,14 +176,7 @@ app.post("/api/user/:id/profile", async (req, res) => {
 
 app.get("/api/users", async (req, res) => {
   const users = await User.find({}, "_id firstName lastName email role profilePic");
-  res.json(users.map(u => ({
-    _id: u._id,
-    firstName: u.firstName,
-    lastName: u.lastName,
-    email: u.email,
-    role: u.role,
-    profilePic: u.profilePic?.startsWith('http') ? u.profilePic : null,
-  })));
+  res.json(users.map(u => ({ _id: u._id, firstName: u.firstName, lastName: u.lastName, email: u.email, role: u.role, profilePic: u.profilePic?.startsWith('http') ? u.profilePic : null })));
 });
 
 // ── Messages (inbox) ──────────────────────────────────────────────────────
@@ -247,27 +235,13 @@ app.post("/api/admin/send-email", async (req, res) => {
   res.json({ message: "Email sent", count: sent, requested: userIds.length });
 });
 
-
 // ── Management ────────────────────────────────────────────────────────────
 app.post("/api/management/send-email", async (req, res) => {
   const { subject, body, userIds, from } = req.body;
   let sent = 0;
   for (const uid of userIds) {
     const ts = Date.now();
-    await Message.create({
-      user_id: uid,
-      id: `management-email-${ts}`,
-      from,                          // "Management Team"
-      subject,
-      preview: body.slice(0, 100),
-      body,
-      timestamp: "just now",
-      createdAt: ts,
-      unread: true,
-      starred: false,
-      role: "management",            // 👈 labeled as management (not admin)
-      isManagement: true             // 👈 management flag
-    });
+    await Message.create({ user_id: uid, id: `management-email-${ts}`, from, subject, preview: body.slice(0, 100), body, timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "management", isManagement: true });
     sent++;
   }
   res.json({ message: "Email sent", count: sent, requested: userIds.length });
@@ -278,16 +252,12 @@ app.post("/api/chat/send", async (req, res) => {
   const { to, content, sender_id, reply_to } = req.body;
   if (!content?.trim()) return res.status(400).json({ error: "Empty message" });
   const timestamp = Date.now();
-
   let conv = await Conversation.findOne({ participants: { $all: [sender_id, to], $size: 2 } });
   if (!conv) conv = await Conversation.create({ participants: [sender_id, to], last_message: content, last_message_time: timestamp, last_message_sender: sender_id, unread: {} });
   const convId = conv._id.toString();
-
   const msg = await ChatMessage.create({ conversation_id: convId, sender_id, content, timestamp, read: false, deleted: false, reply_to: reply_to || null });
   const msgData = { _id: msg._id.toString(), conversation_id: convId, sender_id, content, timestamp, read: false, deleted: false, reply_to: reply_to || null };
-
   await Conversation.updateOne({ _id: conv._id }, { $set: { last_message: content, last_message_time: timestamp, last_message_sender: sender_id }, $inc: { [`unread.${to}`]: 1 } });
-
   res.json({ message: msgData });
 });
 
@@ -325,10 +295,17 @@ app.get("/api/chat/conversations/:userId", async (req, res) => {
     const other = userMap[otherId];
     if (!other) return null;
     const unread = conv.unread?.[uid] || 0;
-    return { conversation_id: conv._id.toString(), other_user: { _id: otherId, firstName: other.firstName, lastName: other.lastName, role: other.role, profilePic: other.profilePic?.startsWith('http') ? other.profilePic : null, 
-      online: other.online && other.last_seen && (Date.now() - other.last_seen < 120000) ? true : (other.online && !other.last_seen ? true : false),
-last_seen: other.last_seen },
-       last_message: conv.last_message, last_message_time: conv.last_message_time, last_message_sender: conv.last_message_sender, unread };
+    return {
+      conversation_id: conv._id.toString(),
+      other_user: {
+        _id: otherId, firstName: other.firstName, lastName: other.lastName,
+        role: other.role, profilePic: other.profilePic?.startsWith('http') ? other.profilePic : null,
+        online: other.online && other.last_seen && (Date.now() - other.last_seen < 120000) ? true : (other.online && !other.last_seen ? true : false),
+        last_seen: other.last_seen
+      },
+      last_message: conv.last_message, last_message_time: conv.last_message_time,
+      last_message_sender: conv.last_message_sender, unread
+    };
   }).filter(Boolean);
   res.json(result);
 });
@@ -338,21 +315,17 @@ app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
   res.json(msgs.map(m => ({ _id: m._id.toString(), conversation_id: m.conversation_id, sender_id: m.sender_id, content: m.content, timestamp: m.timestamp, read: m.read, deleted: m.deleted, reply_to: m.reply_to })));
 });
 
-app.post("/api/incidents", async (req, res) => {
+// ── Incidents ─────────────────────────────────────────────────────────────
+
+app.get("/api/incidents/user/:userId", async (req, res) => {
   try {
-    const { title, description, priority, category, created_by } = req.body;
-    if (!title || !description || !created_by) {
-      return res.status(400).json({ error: "title, description and created_by are required" });
-    }
-    const incident = await Incident.create({ title, description, priority, category, created_by });
-    res.json({ incident });
+    const incidents = await Incident.find({ created_by: req.params.userId }).sort({ created_at: -1 }).lean();
+    res.json(incidents);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to create incident" });
+    res.status(500).json({ error: "Failed to fetch incidents" });
   }
 });
 
-// GET — all incidents (management/admin view)
 app.get("/api/incidents", async (req, res) => {
   try {
     const { status, priority, assigned_to } = req.query;
@@ -360,116 +333,77 @@ app.get("/api/incidents", async (req, res) => {
     if (status)      filter.status      = status;
     if (priority)    filter.priority    = priority;
     if (assigned_to) filter.assigned_to = assigned_to;
-
-    const incidents = await Incident.find(filter)
-      .sort({ created_at: -1 })
-      .populate("created_by",  "firstName lastName role profilePic")
-      .populate("assigned_to", "firstName lastName role profilePic")
-      .lean();
+    const incidents = await Incident.find(filter).sort({ created_at: -1 }).lean();
     res.json(incidents);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch incidents" });
   }
 });
 
-// POST — create a new incident
 app.post("/api/incidents", async (req, res) => {
   try {
     const { title, description, priority, category, created_by } = req.body;
-    if (!title || !description || !created_by) {
-      return res.status(400).json({ error: "title, description and created_by are required" });
-    }
+    if (!title || !description || !created_by) return res.status(400).json({ error: "Missing required fields" });
     const incident = await Incident.create({ title, description, priority, category, created_by });
-    const populated = await incident.populate("assigned_to", "firstName lastName");
-    res.json({ incident: populated });
+    res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to create incident" });
   }
 });
 
-// PATCH — update incident status
 app.patch("/api/incidents/:id/status", async (req, res) => {
   try {
-    const { status } = req.body;
     const allowed = ["open", "in_progress", "resolved", "closed"];
-    if (!allowed.includes(status)) {
-      return res.status(400).json({ error: "Invalid status" });
-    }
-    const incident = await Incident.findByIdAndUpdate(
-      req.params.id,
-      { status, updated_at: Date.now() },
-      { new: true }
-    ).populate("assigned_to", "firstName lastName").lean();
-    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    if (!allowed.includes(req.body.status)) return res.status(400).json({ error: "Invalid status" });
+    const incident = await Incident.findByIdAndUpdate(req.params.id, { status: req.body.status, updated_at: Date.now() }, { new: true }).lean();
+    if (!incident) return res.status(404).json({ error: "Not found" });
     res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to update status" });
   }
 });
 
-// PATCH — assign incident to a professional (management/admin)
 app.patch("/api/incidents/:id/assign", async (req, res) => {
   try {
-    const { assigned_to } = req.body;
-    const incident = await Incident.findByIdAndUpdate(
-      req.params.id,
-      { assigned_to, status: "in_progress", updated_at: Date.now() },
-      { new: true }
-    )
-      .populate("created_by",  "firstName lastName role profilePic")
-      .populate("assigned_to", "firstName lastName role profilePic")
-      .lean();
-    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    const incident = await Incident.findByIdAndUpdate(req.params.id, { assigned_to: req.body.assigned_to, status: "in_progress", updated_at: Date.now() }, { new: true }).lean();
+    if (!incident) return res.status(404).json({ error: "Not found" });
     res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to assign incident" });
   }
 });
 
-// GET — comments for an incident
 app.get("/api/incidents/:id/comments", async (req, res) => {
   try {
     const incident = await Incident.findById(req.params.id).select("comments").lean();
-    if (!incident) return res.status(404).json({ error: "Incident not found" });
+    if (!incident) return res.status(404).json({ error: "Not found" });
     res.json(incident.comments || []);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch comments" });
   }
 });
 
-// POST — add a comment to an incident
 app.post("/api/incidents/:id/comments", async (req, res) => {
   try {
     const { content, author_id } = req.body;
-    if (!content || !author_id) {
-      return res.status(400).json({ error: "content and author_id are required" });
-    }
-    // get author name
+    if (!content || !author_id) return res.status(400).json({ error: "Missing fields" });
     const author = await User.findById(author_id).select("firstName lastName").lean();
     const author_name = author ? `${author.firstName} ${author.lastName}` : "Unknown";
-
     const newComment = { content, author_id, author_name, created_at: new Date() };
-    const incident = await Incident.findByIdAndUpdate(
-      req.params.id,
-      { $push: { comments: newComment }, updated_at: Date.now() },
-      { new: true }
-    ).lean();
-    if (!incident) return res.status(404).json({ error: "Incident not found" });
-
-    const added = incident.comments[incident.comments.length - 1];
-    res.json({ comment: added });
+    const incident = await Incident.findByIdAndUpdate(req.params.id, { $push: { comments: newComment }, updated_at: Date.now() }, { new: true }).lean();
+    if (!incident) return res.status(404).json({ error: "Not found" });
+    res.json({ comment: incident.comments[incident.comments.length - 1] });
   } catch (err) {
     res.status(500).json({ error: "Failed to add comment" });
   }
 });
 
-// DELETE — delete an incident (admin only)
 app.delete("/api/incidents/:id", async (req, res) => {
   try {
     await Incident.findByIdAndDelete(req.params.id);
-    res.json({ message: "Incident deleted" });
+    res.json({ message: "Deleted" });
   } catch (err) {
-    res.status(500).json({ error: "Failed to delete incident" });
+    res.status(500).json({ error: "Failed to delete" });
   }
 });
 
