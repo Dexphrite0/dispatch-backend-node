@@ -430,6 +430,33 @@ app.delete("/api/incidents/:id", async (req, res) => {
   }
 });
 
+app.post("/api/incidents/broadcast", async (req, res) => {
+  try {
+    const { subject, message, incidentId, from } = req.body;
+    const users = await User.find({}, "_id");
+    const ts = Date.now();
+    for (const u of users) {
+      await Message.create({
+        user_id: u._id.toString(),
+        id: `broadcast-${ts}`,
+        from: from || "ADMIN",
+        subject: `🚨 ${subject}`,
+        preview: message.slice(0, 100),
+        body: message,
+        timestamp: "just now",
+        createdAt: ts,
+        unread: true,
+        starred: false,
+        role: "admin",
+        isAdmin: true,
+      });
+    }
+    res.json({ message: "Broadcast sent", count: users.length });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to broadcast" });
+  }
+});
+
 // ── Health check ──────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ status: "ok" }));
 
