@@ -64,6 +64,7 @@ const IncidentSchema = new mongoose.Schema({
   priority:    { type: String, enum: ["low","medium","high","critical"], default: "medium" },
   status:      { type: String, enum: ["open","in_progress","resolved","closed"], default: "open" },
   category:    { type: String, default: "General" },
+  visibility:  { type: String, enum: ["public","private"], default: "public" },
   created_by:  { type: String, required: true },
   assigned_to: { type: String, default: null },
   comments: [{
@@ -73,6 +74,7 @@ const IncidentSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
 });
+
 const Incident = mongoose.model("Incident", IncidentSchema);
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -97,6 +99,18 @@ async function broadcastOnlineStatus(userId, online, last_seen) {
       }
     }
   }
+}
+
+async function getDisplayName(userId) {
+  if (!userId) return "Unknown";
+  const user = await User.findById(userId).select("role _id").lean().catch(() => null);
+  if (!user) return "Unknown";
+  if (user.role === "admin") return "ADMIN";
+  const role = user.role
+    ? user.role.charAt(0).toUpperCase() + user.role.slice(1)
+    : "User";
+  const shortId = userId.slice(-6);
+  return `${role}(${shortId})`;
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────
@@ -317,6 +331,16 @@ app.get("/api/chat/conversation/:convId/messages", async (req, res) => {
 
 // ── Incidents ─────────────────────────────────────────────────────────────
 
+// ── Incidents ─────────────────────────────────────────────────────────────
+app.get("/api/incidents/public", async (req, res) => {
+  try {
+    const incidents = await Incident.find({ visibility: "public" }).sort({ created_at: -1 }).lean();
+    res.json(incidents);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch public incidents" });
+  }
+});
+
 app.get("/api/incidents/user/:userId", async (req, res) => {
   try {
     const incidents = await Incident.find({ created_by: req.params.userId }).sort({ created_at: -1 }).lean();
@@ -342,9 +366,9 @@ app.get("/api/incidents", async (req, res) => {
 
 app.post("/api/incidents", async (req, res) => {
   try {
-    const { title, description, priority, category, created_by } = req.body;
+    const { title, description, priority, category, created_by, visibility } = req.body;
     if (!title || !description || !created_by) return res.status(400).json({ error: "Missing required fields" });
-    const incident = await Incident.create({ title, description, priority, category, created_by });
+    const incident = await Incident.create({ title, description, priority, category, created_by, visibility: visibility || "public" });
     res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to create incident" });
@@ -387,8 +411,7 @@ app.post("/api/incidents/:id/comments", async (req, res) => {
   try {
     const { content, author_id } = req.body;
     if (!content || !author_id) return res.status(400).json({ error: "Missing fields" });
-    const author = await User.findById(author_id).select("firstName lastName").lean();
-    const author_name = author ? `${author.firstName} ${author.lastName}` : "Unknown";
+    const author_name = await getDisplayName(author_id);
     const newComment = { content, author_id, author_name, created_at: new Date() };
     const incident = await Incident.findByIdAndUpdate(req.params.id, { $push: { comments: newComment }, updated_at: Date.now() }, { new: true }).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
