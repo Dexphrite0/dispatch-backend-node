@@ -381,6 +381,23 @@ app.patch("/api/incidents/:id/status", async (req, res) => {
     if (!allowed.includes(req.body.status)) return res.status(400).json({ error: "Invalid status" });
     const incident = await Incident.findByIdAndUpdate(req.params.id, { status: req.body.status, updated_at: Date.now() }, { new: true }).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
+
+    // ── Inbox notification to creator ──
+    const statusLabels = { in_progress: "In Progress", resolved: "Resolved", closed: "Closed", open: "Reopened" };
+    const label = statusLabels[req.body.status];
+    if (label && incident.created_by) {
+      const ts = Date.now();
+      await Message.create({
+        user_id: incident.created_by,
+        id: `incident-status-${incident._id}-${ts}`,
+        from: "Dispatch System",
+        subject: `Incident ${label}: ${incident.title}`,
+        preview: `Your incident has been marked as ${label}.`,
+        body: `Your incident "${incident.title}" (INC-${incident._id.toString().slice(-6).toUpperCase()}) has been marked as ${label}.`,
+        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
+      });
+    }
+
     res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to update status" });
@@ -391,9 +408,43 @@ app.patch("/api/incidents/:id/assign", async (req, res) => {
   try {
     const incident = await Incident.findByIdAndUpdate(req.params.id, { assigned_to: req.body.assigned_to, status: "in_progress", updated_at: Date.now() }, { new: true }).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
+
+    // ── Inbox notification to creator ──
+    if (incident.created_by) {
+      const ts = Date.now();
+      await Message.create({
+        user_id: incident.created_by,
+        id: `incident-assigned-${incident._id}-${ts}`,
+        from: "Dispatch System",
+        subject: `Incident Assigned: ${incident.title}`,
+        preview: "A professional has been assigned to your incident.",
+        body: `Good news! A professional has been assigned to your incident "${incident.title}" (INC-${incident._id.toString().slice(-6).toUpperCase()}) and it is now in progress.`,
+        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
+      });
+    }
+
     res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to assign incident" });
+  }
+});
+
+
+
+app.patch("/api/incidents/:id/reopen", async (req, res) => {
+  try {
+    const { reason, author_id } = req.body;
+    const author_name = await getDisplayName(author_id);
+    const newComment = { content: `Reopened: ${reason}`, author_id, author_name, created_at: new Date() };
+    const incident = await Incident.findByIdAndUpdate(
+      req.params.id,
+      { status: "open", updated_at: Date.now(), $push: { comments: newComment } },
+      { new: true }
+    ).lean();
+    if (!incident) return res.status(404).json({ error: "Not found" });
+    res.json({ incident });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to reopen" });
   }
 });
 
