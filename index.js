@@ -200,8 +200,11 @@ app.get("/api/users", async (req, res) => {
 });
 
 // ── Messages (inbox) ──────────────────────────────────────────────────────
+// ✅ new — accepts optional ?excludeOwn=true query param
 app.get("/api/user/:id/messages", async (req, res) => {
-  const msgs = await Message.find({ user_id: req.params.id });
+  const filter = { user_id: req.params.id };
+  if (req.query.excludeOwn === "true") filter.isAdmin = { $ne: true };
+  const msgs = await Message.find(filter);
   res.json(msgs);
 });
 
