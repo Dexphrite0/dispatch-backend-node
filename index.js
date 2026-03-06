@@ -537,7 +537,7 @@ app.post("/api/incidents/:id/reopen-request", async (req, res) => {
         from: "Dispatch System",
         subject: `Reopen Request: ${incident.title}`,
         preview: `A customer wants to reopen ${incRef}. Reason: ${reason.slice(0, 80)}`,
-        body: `A customer has requested to reopen incident ${incRef} — "${incident.title}".\n\nReason: ${reason}\n\nPlease review this incident and accept or reject the request from the incident panel.`,
+        body: `A customer has requested to reopen incident ${incRef} — "${incident.title}".\nReason: ${reason}\nPlease review this incident and accept or reject the request from the incident panel.`,
         timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
       });
     }
