@@ -71,6 +71,12 @@ const IncidentSchema = new mongoose.Schema({
     content: String, author_id: String,
     author_name: String, created_at: { type: Date, default: Date.now },
   }],
+  reopen_request: {
+    pending:       { type: Boolean, default: false },
+    reason:        { type: String, default: "" },
+    requested_by:  { type: String, default: null },
+    requested_at:  { type: Date, default: null },
+  },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
 });
@@ -505,6 +511,79 @@ app.post("/api/incidents/broadcast", async (req, res) => {
     res.json({ message: "Broadcast sent", count: users.length });
   } catch (err) {
     res.status(500).json({ error: "Failed to broadcast" });
+  }
+});
+
+app.post("/api/incidents/:id/reopen-request", async (req, res) => {
+  try {
+    const { reason, author_id } = req.body;
+    if (!reason || !author_id) return res.status(400).json({ error: "Missing fields" });
+
+    const incident = await Incident.findByIdAndUpdate(
+      req.params.id,
+      { reopen_request: { pending: true, reason, requested_by: author_id, requested_at: new Date() } },
+      { new: true }
+    ).lean();
+    if (!incident) return res.status(404).json({ error: "Not found" });
+
+    // Send inbox email to all management + admin
+    const staff = await User.find({ role: { $in: ["management", "admin"] } }, "_id").lean();
+    const ts = Date.now();
+    const incRef = `INC-${incident._id.toString().slice(-6).toUpperCase()}`;
+    for (const u of staff) {
+      await Message.create({
+        user_id: u._id.toString(),
+        id: `reopen-req-${incident._id}-${ts}`,
+        from: "Dispatch System",
+        subject: `Reopen Request: ${incident.title}`,
+        preview: `A customer wants to reopen ${incRef}. Reason: ${reason.slice(0, 80)}`,
+        body: `A customer has requested to reopen incident ${incRef} — "${incident.title}".\n\nReason: ${reason}\n\nPlease review this incident and accept or reject the request from the incident panel.`,
+        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
+      });
+    }
+
+    res.json({ incident });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to submit reopen request" });
+  }
+});
+
+app.patch("/api/incidents/:id/reopen-request/respond", async (req, res) => {
+  try {
+    const { accepted, response_message, responder_id } = req.body;
+    if (accepted === undefined) return res.status(400).json({ error: "Missing accepted field" });
+
+    const incident = await Incident.findById(req.params.id).lean();
+    if (!incident) return res.status(404).json({ error: "Not found" });
+
+    const update = accepted
+      ? { status: "open", reopen_request: { pending: false, reason: "", requested_by: null, requested_at: null }, updated_at: Date.now() }
+      : { reopen_request: { pending: false, reason: "", requested_by: null, requested_at: null }, updated_at: Date.now() };
+
+    const updated = await Incident.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
+    const incRef  = `INC-${incident._id.toString().slice(-6).toUpperCase()}`;
+    const ts      = Date.now();
+
+    // Send inbox email back to customer
+    if (incident.reopen_request?.requested_by) {
+      await Message.create({
+        user_id: incident.reopen_request.requested_by,
+        id: `reopen-resp-${incident._id}-${ts}`,
+        from: "Dispatch System",
+        subject: accepted
+          ? `Reopen Approved: ${incident.title}`
+          : `Reopen Declined: ${incident.title}`,
+        preview: response_message?.slice(0, 100) || (accepted ? "Your reopen request was approved." : "Your reopen request was declined."),
+        body: response_message || (accepted
+          ? `Your request to reopen incident ${incRef} has been approved. The incident is now open again.`
+          : `Your request to reopen incident ${incRef} has been declined.`),
+        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
+      });
+    }
+
+    res.json({ incident: updated });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to respond to reopen request" });
   }
 });
 
