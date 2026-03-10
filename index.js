@@ -407,19 +407,6 @@ app.patch("/api/incidents/:id/status", async (req, res) => {
     const label = statusLabels[req.body.status];
 
     if (label && incident.created_by) {
-      const ts = Date.now();
-
-      // Inbox message
-      await Message.create({
-        user_id: incident.created_by,
-        id: `incident-status-${incident._id}-${ts}`,
-        from: "Dispatch System",
-        subject: `Incident ${label}: ${incident.title}`,
-        preview: `Your incident has been marked as ${label}.`,
-        body: `Your incident "${incident.title}" (INC-${incident._id.toString().slice(-6).toUpperCase()}) has been marked as ${label}.`,
-        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
-      });
-
       // Real-time alert to creator
       ably.channels.get(`user-${incident.created_by}`).publish("alert", {
         type: "status_changed",
@@ -444,18 +431,8 @@ app.patch("/api/incidents/:id/assign", async (req, res) => {
 
     const ts = Date.now();
 
-    // Inbox + alert to creator
+    // Alert to creator
     if (incident.created_by) {
-      await Message.create({
-        user_id: incident.created_by,
-        id: `incident-assigned-${incident._id}-${ts}`,
-        from: "Dispatch System",
-        subject: `Incident Assigned: ${incident.title}`,
-        preview: "A professional has been assigned to your incident.",
-        body: `Good news! A professional has been assigned to your incident "${incident.title}" (INC-${incident._id.toString().slice(-6).toUpperCase()}) and it is now in progress.`,
-        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
-      });
-
       ably.channels.get(`user-${incident.created_by}`).publish("alert", {
         type: "incident_assigned",
         title: "Incident Assigned",
@@ -535,10 +512,13 @@ app.delete("/api/incidents/:id", async (req, res) => {
 // ── POST /api/incidents/broadcast ────────────────────────────────────────
 app.post("/api/incidents/broadcast", async (req, res) => {
   try {
-    const { subject, message, incidentId, from } = req.body;
+    const { subject, message, incidentId, from, sender_id } = req.body;
     const users = await User.find({}, "_id");
     const ts = Date.now();
     for (const u of users) {
+      // Skip the person who sent the broadcast
+      if (sender_id && u._id.toString() === sender_id) continue;
+
       await Message.create({
         user_id: u._id.toString(),
         id: `broadcast-${ts}`,
@@ -580,16 +560,6 @@ app.post("/api/incidents/:id/reopen-request", async (req, res) => {
     const incRef = `INC-${incident._id.toString().slice(-6).toUpperCase()}`;
 
     for (const u of staff) {
-      await Message.create({
-        user_id: u._id.toString(),
-        id: `reopen-req-${incident._id}-${ts}`,
-        from: "Dispatch System",
-        subject: `Reopen Request: ${incident.title}`,
-        preview: `A customer wants to reopen ${incRef}. Reason: ${reason.slice(0, 80)}`,
-        body: `A customer has requested to reopen incident ${incRef} — "${incident.title}".\nReason: ${reason}\nPlease review this incident and accept or reject the request from the incident panel.`,
-        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
-      });
-
       ably.channels.get(`user-${u._id}`).publish("alert", {
         type: "reopen_request",
         title: "Reopen Request",
@@ -623,18 +593,6 @@ app.patch("/api/incidents/:id/reopen-request/respond", async (req, res) => {
     const ts      = Date.now();
 
     if (incident.reopen_request?.requested_by) {
-      await Message.create({
-        user_id: incident.reopen_request.requested_by,
-        id: `reopen-resp-${incident._id}-${ts}`,
-        from: "Dispatch System",
-        subject: accepted ? `Reopen Approved: ${incident.title}` : `Reopen Declined: ${incident.title}`,
-        preview: response_message?.slice(0, 100) || (accepted ? "Your reopen request was approved." : "Your reopen request was declined."),
-        body: response_message || (accepted
-          ? `Your request to reopen incident ${incRef} has been approved. The incident is now open again.`
-          : `Your request to reopen incident ${incRef} has been declined.`),
-        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin",
-      });
-
       ably.channels.get(`user-${incident.reopen_request.requested_by}`).publish("alert", {
         type: accepted ? "reopen_approved" : "reopen_declined",
         title: accepted ? "Reopen Approved ✓" : "Reopen Declined",
