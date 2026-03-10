@@ -80,8 +80,31 @@ const IncidentSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
 });
-
 const Incident = mongoose.model("Incident", IncidentSchema);
+
+// ── Alert Schema ──────────────────────────────────────────────────────────
+const AlertSchema = new mongoose.Schema({
+  user_id:   { type: String, required: true },
+  type:      String,
+  title:     String,
+  message:   String,
+  priority:  { type: String, enum: ["critical","warning","success","info"], default: "info" },
+  unread:    { type: Boolean, default: true },
+  starred:   { type: Boolean, default: false },
+  incidentId: String,
+  createdAt: { type: Number, default: () => Date.now() },
+});
+const Alert = mongoose.model("alerts", AlertSchema);
+
+// ── Helper: save alert to DB + publish Ably ───────────────────────────────
+async function pushAlert(userId, payload) {
+  const saved = await Alert.create({ user_id: userId, ...payload });
+  ably.channels.get(`user-${userId}`).publish("alert", {
+    ...payload,
+    _id: saved._id.toString(),
+    createdAt: saved.createdAt,
+  });
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function formatTimestamp(ts) {
@@ -243,6 +266,58 @@ app.post("/api/user/:id/viewed-emails", async (req, res) => {
   res.json({ message: "Marked as viewed" });
 });
 
+// ── Alerts ────────────────────────────────────────────────────────────────
+
+// Fetch all alerts for a user
+app.get("/api/user/:id/alerts", async (req, res) => {
+  try {
+    const alerts = await Alert.find({ user_id: req.params.id }).sort({ createdAt: -1 }).lean();
+    res.json(alerts);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch alerts" });
+  }
+});
+
+// Mark single alert as read
+app.patch("/api/user/:uid/alert/:aid/read", async (req, res) => {
+  try {
+    await Alert.updateOne({ _id: req.params.aid, user_id: req.params.uid }, { $set: { unread: false } });
+    res.json({ message: "Marked as read" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to mark as read" });
+  }
+});
+
+// Mark all alerts as read
+app.patch("/api/user/:id/alerts/read-all", async (req, res) => {
+  try {
+    await Alert.updateMany({ user_id: req.params.id }, { $set: { unread: false } });
+    res.json({ message: "All marked as read" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to mark all as read" });
+  }
+});
+
+// Delete single alert
+app.delete("/api/user/:uid/alert/:aid", async (req, res) => {
+  try {
+    await Alert.deleteOne({ _id: req.params.aid, user_id: req.params.uid });
+    res.json({ message: "Deleted" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete alert" });
+  }
+});
+
+// Delete all alerts for a user
+app.delete("/api/user/:id/alerts", async (req, res) => {
+  try {
+    await Alert.deleteMany({ user_id: req.params.id });
+    res.json({ message: "All alerts cleared" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to clear alerts" });
+  }
+});
+
 // ── Admin ─────────────────────────────────────────────────────────────────
 app.post("/api/admin/send-email", async (req, res) => {
   const { subject, body, userIds, from } = req.body;
@@ -375,11 +450,10 @@ app.post("/api/incidents", async (req, res) => {
     if (!title || !description || !created_by) return res.status(400).json({ error: "Missing required fields" });
     const incident = await Incident.create({ title, description, priority, category, created_by, visibility: visibility || "public" });
 
-    // Alert management + admin if critical
     if (priority === "critical") {
       const staff = await User.find({ role: { $in: ["management", "admin"] } }, "_id").lean();
       for (const u of staff) {
-        ably.channels.get(`user-${u._id}`).publish("alert", {
+        await pushAlert(u._id.toString(), {
           type: "critical_incident",
           title: "🚨 Critical Incident Filed",
           message: `"${title}" has been filed as critical.`,
@@ -407,8 +481,7 @@ app.patch("/api/incidents/:id/status", async (req, res) => {
     const label = statusLabels[req.body.status];
 
     if (label && incident.created_by) {
-      // Real-time alert to creator
-      ably.channels.get(`user-${incident.created_by}`).publish("alert", {
+      await pushAlert(incident.created_by, {
         type: "status_changed",
         title: `Incident ${label}`,
         message: `"${incident.title}" is now ${label}.`,
@@ -429,11 +502,8 @@ app.patch("/api/incidents/:id/assign", async (req, res) => {
     const incident = await Incident.findByIdAndUpdate(req.params.id, { assigned_to: req.body.assigned_to, status: "in_progress", updated_at: Date.now() }, { new: true }).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
 
-    const ts = Date.now();
-
-    // Alert to creator
     if (incident.created_by) {
-      ably.channels.get(`user-${incident.created_by}`).publish("alert", {
+      await pushAlert(incident.created_by, {
         type: "incident_assigned",
         title: "Incident Assigned",
         message: `Someone is now working on "${incident.title}".`,
@@ -442,9 +512,8 @@ app.patch("/api/incidents/:id/assign", async (req, res) => {
       });
     }
 
-    // Alert to the professional who was assigned
     if (req.body.assigned_to) {
-      ably.channels.get(`user-${req.body.assigned_to}`).publish("alert", {
+      await pushAlert(req.body.assigned_to, {
         type: "assigned_to_you",
         title: "Incident Assigned to You",
         message: `"${incident.title}" has been assigned to you.`,
@@ -512,24 +581,11 @@ app.delete("/api/incidents/:id", async (req, res) => {
 // ── POST /api/incidents/broadcast ────────────────────────────────────────
 app.post("/api/incidents/broadcast", async (req, res) => {
   try {
-    const { subject, message, incidentId, from, sender_id } = req.body;
+    const { subject, message, from, sender_id } = req.body;
     const users = await User.find({}, "_id");
-    const ts = Date.now();
     for (const u of users) {
-      // Skip the person who sent the broadcast
       if (sender_id && u._id.toString() === sender_id) continue;
-
-      await Message.create({
-        user_id: u._id.toString(),
-        id: `broadcast-${ts}`,
-        from: from || "ADMIN",
-        subject: `🚨 ${subject}`,
-        preview: message.slice(0, 100),
-        body: message,
-        timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin", isAdmin: true,
-      });
-
-      ably.channels.get(`user-${u._id}`).publish("alert", {
+      await pushAlert(u._id.toString(), {
         type: "broadcast",
         title: `📢 ${subject}`,
         message: message.slice(0, 100),
@@ -556,11 +612,8 @@ app.post("/api/incidents/:id/reopen-request", async (req, res) => {
     if (!incident) return res.status(404).json({ error: "Not found" });
 
     const staff = await User.find({ role: { $in: ["management", "admin"] } }, "_id").lean();
-    const ts = Date.now();
-    const incRef = `INC-${incident._id.toString().slice(-6).toUpperCase()}`;
-
     for (const u of staff) {
-      ably.channels.get(`user-${u._id}`).publish("alert", {
+      await pushAlert(u._id.toString(), {
         type: "reopen_request",
         title: "Reopen Request",
         message: `Customer wants to reopen "${incident.title}".`,
@@ -589,11 +642,9 @@ app.patch("/api/incidents/:id/reopen-request/respond", async (req, res) => {
       : { reopen_request: { pending: false, reason: "", requested_by: null, requested_at: null }, updated_at: Date.now() };
 
     const updated = await Incident.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
-    const incRef  = `INC-${incident._id.toString().slice(-6).toUpperCase()}`;
-    const ts      = Date.now();
 
     if (incident.reopen_request?.requested_by) {
-      ably.channels.get(`user-${incident.reopen_request.requested_by}`).publish("alert", {
+      await pushAlert(incident.reopen_request.requested_by, {
         type: accepted ? "reopen_approved" : "reopen_declined",
         title: accepted ? "Reopen Approved ✓" : "Reopen Declined",
         message: accepted
