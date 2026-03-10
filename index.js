@@ -450,14 +450,14 @@ app.post("/api/incidents", async (req, res) => {
     if (!title || !description || !created_by) return res.status(400).json({ error: "Missing required fields" });
     const incident = await Incident.create({ title, description, priority, category, created_by, visibility: visibility || "public" });
 
-    if (priority === "critical") {
+    if (priority === "critical" || priority === "high") {
       const staff = await User.find({ role: { $in: ["management", "admin"] } }, "_id").lean();
       for (const u of staff) {
         await pushAlert(u._id.toString(), {
           type: "critical_incident",
-          title: "🚨 Critical Incident Filed",
-          message: `"${title}" has been filed as critical.`,
-          priority: "critical",
+          title: priority === "critical" ? "Critical Incident Filed" : "High Priority Incident Filed",
+          message: `"${title}" has been filed as ${priority}.`,
+          priority: priority === "critical" ? "critical" : "warning",
           incidentId: incident._id.toString(),
         });
       }
