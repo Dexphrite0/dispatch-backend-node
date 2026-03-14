@@ -372,7 +372,7 @@ app.delete("/api/chat/message/:msgId", async (req, res) => {
 app.get("/api/chat/users/:userId", async (req, res) => {
   const user = await User.findById(req.params.userId).catch(() => null);
   if (!user) return res.status(404).json({ error: "User not found" });
-  const allowed = { customer: ["management"], management: ["customer", "admin"], admin: ["management", "customer"] }[user.role] || [];
+  const allowed = { customer: ["management"],professional:["management"], management: ["customer", "admin", "professional"], admin: ["management", "customer", "professional"] }[user.role] || [];
   if (!allowed.length) return res.json([]);
   const users = await User.find({ role: { $in: allowed }, _id: { $ne: user._id } });
   res.json(users.map(u => ({ _id: u._id, firstName: u.firstName, lastName: u.lastName, role: u.role, profilePic: u.profilePic, online: u.online || false, last_seen: u.last_seen })));
