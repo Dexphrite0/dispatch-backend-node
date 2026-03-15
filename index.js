@@ -82,7 +82,7 @@ const IncidentSchema = new mongoose.Schema({
 });
 const Incident = mongoose.model("Incident", IncidentSchema);
 
-// ── Alert Schema ──────────────────────────────────────────────────────────
+// ── Alert Schema -------
 const AlertSchema = new mongoose.Schema({
   user_id:   { type: String, required: true },
   type:      String,
@@ -180,6 +180,16 @@ app.post("/api/user/:id/offline", async (req, res) => {
   await User.updateOne({ _id: req.params.id }, { $set: { online: false, last_seen: now } }).catch(() => {});
   broadcastOnlineStatus(req.params.id, false, now);
   res.json({ message: "Offline" });
+});
+
+app.get("/api/user/:id/background", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("backgroundImage").lean();
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ backgroundImage: user.backgroundImage || null });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch background" });
+  }
 });
 
 // ── User ──────────────────────────────────────────────────────────────────
