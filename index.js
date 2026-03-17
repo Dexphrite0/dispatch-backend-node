@@ -30,7 +30,7 @@ mongoose.connect(process.env.MONGO_URL).then(() => console.log("✓ MongoDB conn
 // ── Schemas ───────────────────────────────────────────────────────────────
 const UserSchema = new mongoose.Schema({
   firstName: String, lastName: String, email: { type: String, unique: true },
-  password: String, role: String, profilePic: String, backgroundImage: String,
+  password: String, role: String, profilePic: String, backgroundImage: String,backgroundHistory: { type: [String], default: [] },
   coverImage: String, phone: String, location: String, website: String,
   bio: String, createdAt: Number, online: Boolean, last_seen: Number,
 });
@@ -184,9 +184,16 @@ app.post("/api/user/:id/offline", async (req, res) => {
 
 app.get("/api/user/:id/background", async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select("backgroundImage").lean();
+    const user = await User.findById(req.params.id)
+      .select("backgroundImage backgroundHistory")
+      .lean();
+
     if (!user) return res.status(404).json({ error: "User not found" });
-    res.json({ backgroundImage: user.backgroundImage || null });
+
+    res.json({
+      backgroundImage: user.backgroundImage || null,
+      backgroundHistory: user.backgroundHistory || [],
+    });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch background" });
   }
@@ -207,7 +214,22 @@ app.post("/api/user/:id/profile-pic", async (req, res) => {
 });
 
 app.post("/api/user/:id/background", async (req, res) => {
-  await User.updateOne({ _id: req.params.id }, { $set: { backgroundImage: req.body.backgroundImage } });
+  const img = req.body.backgroundImage;
+
+  await User.updateOne(
+    { _id: req.params.id },
+    {
+      $set: { backgroundImage: img },
+      $push: {
+        backgroundHistory: {
+          $each: [img],
+          $position: 0,
+          $slice: 5,
+        },
+      },
+    }
+  );
+
   res.json({ message: "Background image saved" });
 });
 
