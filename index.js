@@ -475,12 +475,21 @@ app.get("/api/incidents", async (req, res) => {
   }
 });
 
-// ── POST /api/incidents ───────────────────────────────────────────────────
+// ── POST /api/incidents (WITH ABLY) ───────────────────────────────────────
 app.post("/api/incidents", async (req, res) => {
   try {
     const { title, description, priority, category, created_by, visibility } = req.body;
     if (!title || !description || !created_by) return res.status(400).json({ error: "Missing required fields" });
     const incident = await Incident.create({ title, description, priority, category, created_by, visibility: visibility || "public" });
+
+    ably.channels.get("incidents").publish("incident-created", {
+      _id: incident._id.toString(),
+      title: incident.title,
+      status: incident.status,
+      priority: incident.priority,
+      created_by: incident.created_by,
+      createdAt: incident.created_at,
+    }).catch(err => console.error("Failed to publish incident-created:", err));
 
     if (priority === "critical" || priority === "high") {
       const staff = await User.find({ role: { $in: ["management", "admin"] } }, "_id").lean();
@@ -501,13 +510,21 @@ app.post("/api/incidents", async (req, res) => {
   }
 });
 
-// ── PATCH /api/incidents/:id/status ──────────────────────────────────────
+// ── PATCH /api/incidents/:id/status (WITH ABLY) ──────────────────────────
 app.patch("/api/incidents/:id/status", async (req, res) => {
   try {
     const allowed = ["open", "in_progress", "resolved", "closed"];
     if (!allowed.includes(req.body.status)) return res.status(400).json({ error: "Invalid status" });
     const incident = await Incident.findByIdAndUpdate(req.params.id, { status: req.body.status, updated_at: Date.now() }, { new: true }).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
+
+    ably.channels.get("incidents").publish("incident-updated", {
+      _id: incident._id.toString(),
+      title: incident.title,
+      status: incident.status,
+      priority: incident.priority,
+      updatedAt: incident.updated_at,
+    }).catch(err => console.error("Failed to publish incident-updated:", err));
 
     const statusLabels = { in_progress: "In Progress", resolved: "Resolved", closed: "Closed", open: "Reopened" };
     const label = statusLabels[req.body.status];
@@ -528,11 +545,19 @@ app.patch("/api/incidents/:id/status", async (req, res) => {
   }
 });
 
-// ── PATCH /api/incidents/:id/assign ──────────────────────────────────────
+// ── PATCH /api/incidents/:id/assign (WITH ABLY) ──────────────────────────
 app.patch("/api/incidents/:id/assign", async (req, res) => {
   try {
     const incident = await Incident.findByIdAndUpdate(req.params.id, { assigned_to: req.body.assigned_to, status: "in_progress", updated_at: Date.now() }, { new: true }).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
+
+    ably.channels.get("incidents").publish("incident-updated", {
+      _id: incident._id.toString(),
+      title: incident.title,
+      status: incident.status,
+      assigned_to: incident.assigned_to,
+      updatedAt: incident.updated_at,
+    }).catch(err => console.error("Failed to publish incident-updated:", err));
 
     if (incident.created_by) {
       await pushAlert(incident.created_by, {
@@ -560,6 +585,7 @@ app.patch("/api/incidents/:id/assign", async (req, res) => {
   }
 });
 
+// ── PATCH /api/incidents/:id/reopen (WITH ABLY) ──────────────────────────
 app.patch("/api/incidents/:id/reopen", async (req, res) => {
   try {
     const { reason, author_id } = req.body;
@@ -571,6 +597,14 @@ app.patch("/api/incidents/:id/reopen", async (req, res) => {
       { new: true }
     ).lean();
     if (!incident) return res.status(404).json({ error: "Not found" });
+
+    ably.channels.get("incidents").publish("incident-updated", {
+      _id: incident._id.toString(),
+      title: incident.title,
+      status: incident.status,
+      updatedAt: incident.updated_at,
+    }).catch(err => console.error("Failed to publish incident-updated:", err));
+
     res.json({ incident });
   } catch (err) {
     res.status(500).json({ error: "Failed to reopen" });
@@ -601,9 +635,17 @@ app.post("/api/incidents/:id/comments", async (req, res) => {
   }
 });
 
+// ── DELETE /api/incidents/:id (WITH ABLY) ────────────────────────────────
 app.delete("/api/incidents/:id", async (req, res) => {
   try {
+    const incident = await Incident.findById(req.params.id).lean();
     await Incident.findByIdAndDelete(req.params.id);
+
+    ably.channels.get("incidents").publish("incident-deleted", {
+      _id: req.params.id,
+      title: incident?.title || "Unknown",
+    }).catch(err => console.error("Failed to publish incident-deleted:", err));
+
     res.json({ message: "Deleted" });
   } catch (err) {
     res.status(500).json({ error: "Failed to delete" });
@@ -660,7 +702,7 @@ app.post("/api/incidents/:id/reopen-request", async (req, res) => {
   }
 });
 
-// ── PATCH /api/incidents/:id/reopen-request/respond ──────────────────────
+// ── PATCH /api/incidents/:id/reopen-request/respond (WITH ABLY) ──────────
 app.patch("/api/incidents/:id/reopen-request/respond", async (req, res) => {
   try {
     const { accepted, response_message, responder_id } = req.body;
@@ -674,6 +716,13 @@ app.patch("/api/incidents/:id/reopen-request/respond", async (req, res) => {
       : { reopen_request: { pending: false, reason: "", requested_by: null, requested_at: null }, updated_at: Date.now() };
 
     const updated = await Incident.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
+
+    ably.channels.get("incidents").publish("incident-updated", {
+      _id: updated._id.toString(),
+      title: updated.title,
+      status: updated.status,
+      updatedAt: updated.updated_at,
+    }).catch(err => console.error("Failed to publish incident-updated:", err));
 
     if (incident.reopen_request?.requested_by) {
       await pushAlert(incident.reopen_request.requested_by, {
