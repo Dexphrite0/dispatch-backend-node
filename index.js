@@ -279,18 +279,19 @@ app.post("/api/user/:uid/message/:mid", async (req, res) => {
 app.post("/api/user/:uid/message/:mid/read", async (req, res) => {
   const result = await Message.updateOne(
     { user_id: req.params.uid, $or: [{ id: req.params.mid }, { _id: req.params.mid }] },
-    { unread: false }
+    { $set: { unread: false } }
   );
-
+ 
   if (result.modifiedCount > 0) {
     ably.channels.get(`user-${req.params.uid}`).publish("message-read", {
       messageId: req.params.mid,
       readAt: Date.now()
     }).catch(err => console.error("Ably publish error:", err));
   }
-
+ 
   res.json({ message: "Marked as read" });
 });
+ 
 
 app.delete("/api/user/:uid/message/:mid", async (req, res) => {
   console.log('Delete attempt:', { user_id: req.params.uid, mid: req.params.mid });
