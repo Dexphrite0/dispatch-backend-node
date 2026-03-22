@@ -311,23 +311,47 @@ app.post("/api/user/:uid/message/:mid/read", async (req, res) => {
 });
  
 
+// Replace this in your server.js - BETTER ERROR LOGGING
+
 app.delete("/api/user/:uid/message/:mid", async (req, res) => {
-  console.log('Delete attempt:', { user_id: req.params.uid, mid: req.params.mid });
-  const result = await Message.deleteOne({ 
-    user_id: req.params.uid, 
-    $or: [{ id: req.params.mid }, { _id: req.params.mid }] 
-  });
-  console.log('Delete result:', result);
-  
-  // Publish to Ably for real-time deletion
-  if (result.deletedCount > 0) {
-    ably.channels.get(`user-${req.params.uid}`).publish("message-deleted", {
-      messageId: req.params.mid,
-      deletedAt: Date.now()
-    }).catch(err => console.error("Ably publish error:", err));
+  try {
+    console.log('=== DELETE START ===');
+    console.log('Params:', { uid: req.params.uid, mid: req.params.mid });
+    
+    // Try deleting by id field
+    const result = await Message.deleteOne({ 
+      user_id: req.params.uid,
+      id: req.params.mid
+    });
+    
+    console.log('Delete result:', result);
+    
+    // Publish to Ably for real-time deletion
+    if (result.deletedCount > 0) {
+      console.log('Message deleted, publishing to Ably');
+      await ably.channels.get(`user-${req.params.uid}`).publish("message-deleted", {
+        messageId: req.params.mid,
+        deletedAt: Date.now()
+      });
+      
+      res.json({ success: true, message: "Deleted", deletedCount: result.deletedCount });
+    } else {
+      console.log('No message found with those params');
+      res.json({ success: true, message: "Message not found", deletedCount: 0 });
+    }
+    
+  } catch (err) {
+    console.error('=== DELETE ERROR ===');
+    console.error('Full error:', err);
+    console.error('Error message:', err.message);
+    console.error('Error stack:', err.stack);
+    
+    res.status(500).json({ 
+      success: false,
+      error: err.message,
+      hint: "Check backend console for full error"
+    });
   }
-  
-  res.json({ message: "Deleted", deletedCount: result.deletedCount });
 });
 
 
