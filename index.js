@@ -277,19 +277,34 @@ app.post("/api/user/:uid/message/:mid", async (req, res) => {
 });
 
 app.post("/api/user/:uid/message/:mid/read", async (req, res) => {
+  console.log('Read endpoint hit:', { user_id: req.params.uid, mid: req.params.mid });
+  
   const result = await Message.updateOne(
-    { user_id: req.params.uid, $or: [{ id: req.params.mid }, { _id: req.params.mid }] },
+    { 
+      user_id: req.params.uid,
+      $or: [
+        { _id: req.params.mid },
+        { id: req.params.mid }
+      ]
+    },
     { $set: { unread: false } }
   );
  
+  console.log('Update result:', result);
+ 
   if (result.modifiedCount > 0) {
+    console.log('Publishing message-read to Ably');
     ably.channels.get(`user-${req.params.uid}`).publish("message-read", {
       messageId: req.params.mid,
+      _id: req.params.mid,
+      id: req.params.mid,
       readAt: Date.now()
     }).catch(err => console.error("Ably publish error:", err));
+  } else {
+    console.log('No messages matched for read update');
   }
  
-  res.json({ message: "Marked as read" });
+  res.json({ message: "Marked as read", modified: result.modifiedCount });
 });
  
 
