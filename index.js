@@ -282,8 +282,13 @@ app.post("/api/user/:uid/message/:mid/read", async (req, res) => {
 });
 
 app.delete("/api/user/:uid/message/:mid", async (req, res) => {
-  await Message.deleteOne({ user_id: req.params.uid, $or: [{ id: req.params.mid }, { _id: req.params.mid }] });
-  res.json({ message: "Deleted" });
+  console.log('Delete attempt:', { user_id: req.params.uid, mid: req.params.mid });
+  const result = await Message.deleteOne({ 
+    user_id: req.params.uid, 
+    $or: [{ id: req.params.mid }, { _id: req.params.mid }] 
+  });
+  console.log('Delete result:', result);
+  res.json({ message: "Deleted", deletedCount: result.deletedCount });
 });
 
 // ── Viewed emails ─────────────────────────────────────────────────────────
