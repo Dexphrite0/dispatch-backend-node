@@ -288,6 +288,15 @@ app.delete("/api/user/:uid/message/:mid", async (req, res) => {
     $or: [{ id: req.params.mid }, { _id: req.params.mid }] 
   });
   console.log('Delete result:', result);
+  
+  // Publish to Ably
+  if (result.deletedCount > 0) {
+    ably.channels.get(`user-${req.params.uid}`).publish("message-deleted", {
+      messageId: req.params.mid,
+      deletedAt: Date.now()
+    }).catch(err => console.error("Ably publish error:", err));
+  }
+  
   res.json({ message: "Deleted", deletedCount: result.deletedCount });
 });
 
