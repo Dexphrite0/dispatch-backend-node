@@ -377,12 +377,27 @@ app.delete("/api/user/:id/alerts", async (req, res) => {
 });
 
 // ── Admin ─────────────────────────────────────────────────────────────────
+// ── Admin ─────────────────────────────────────────────────────────────────
 app.post("/api/admin/send-email", async (req, res) => {
   const { subject, body, userIds, from } = req.body;
   let sent = 0;
   for (const uid of userIds) {
     const ts = Date.now();
-    await Message.create({ user_id: uid, id: `admin-email-${ts}`, from, subject, preview: body.slice(0, 100), body, timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin", isAdmin: true });
+    const msg = await Message.create({ user_id: uid, id: `admin-email-${ts}`, from, subject, preview: body.slice(0, 100), body, timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "admin", isAdmin: true });
+    
+    // Publish to Ably for real-time
+    ably.channels.get(`user-${uid}`).publish("message-created", {
+      id: msg.id,
+      _id: msg._id,
+      subject: msg.subject,
+      body: msg.body,
+      preview: msg.preview,
+      from: msg.from,
+      role: msg.role,
+      createdAt: msg.createdAt,
+      unread: true
+    }).catch(err => console.error("Ably publish error:", err));
+    
     sent++;
   }
   res.json({ message: "Email sent", count: sent, requested: userIds.length });
@@ -394,7 +409,21 @@ app.post("/api/management/send-email", async (req, res) => {
   let sent = 0;
   for (const uid of userIds) {
     const ts = Date.now();
-    await Message.create({ user_id: uid, id: `management-email-${ts}`, from, subject, preview: body.slice(0, 100), body, timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "management", isManagement: true });
+    const msg = await Message.create({ user_id: uid, id: `management-email-${ts}`, from, subject, preview: body.slice(0, 100), body, timestamp: "just now", createdAt: ts, unread: true, starred: false, role: "management", isManagement: true });
+    
+    // Publish to Ably for real-time
+    ably.channels.get(`user-${uid}`).publish("message-created", {
+      id: msg.id,
+      _id: msg._id,
+      subject: msg.subject,
+      body: msg.body,
+      preview: msg.preview,
+      from: msg.from,
+      role: msg.role,
+      createdAt: msg.createdAt,
+      unread: true
+    }).catch(err => console.error("Ably publish error:", err));
+    
     sent++;
   }
   res.json({ message: "Email sent", count: sent, requested: userIds.length });
