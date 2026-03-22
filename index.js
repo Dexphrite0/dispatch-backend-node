@@ -289,7 +289,7 @@ app.delete("/api/user/:uid/message/:mid", async (req, res) => {
   });
   console.log('Delete result:', result);
   
-  // Publish to Ably
+  // Publish to Ably for real-time deletion
   if (result.deletedCount > 0) {
     ably.channels.get(`user-${req.params.uid}`).publish("message-deleted", {
       messageId: req.params.mid,
@@ -299,6 +299,7 @@ app.delete("/api/user/:uid/message/:mid", async (req, res) => {
   
   res.json({ message: "Deleted", deletedCount: result.deletedCount });
 });
+
 
 // ── Viewed emails ─────────────────────────────────────────────────────────
 app.get("/api/user/:id/viewed-emails", async (req, res) => {
