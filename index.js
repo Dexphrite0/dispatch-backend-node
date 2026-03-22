@@ -276,35 +276,38 @@ app.post("/api/user/:uid/message/:mid", async (req, res) => {
   res.json({ message: "Updated" });
 });
 
+ 
 app.post("/api/user/:uid/message/:mid/read", async (req, res) => {
-  console.log('Read endpoint hit:', { user_id: req.params.uid, mid: req.params.mid });
-  
-  const result = await Message.updateOne(
-    { 
-      user_id: req.params.uid,
-      $or: [
-        { _id: req.params.mid },
-        { id: req.params.mid }
-      ]
-    },
-    { $set: { unread: false } }
-  );
+  try {
+    console.log('Read endpoint hit:', { user_id: req.params.uid, mid: req.params.mid });
+    
+    const result = await Message.updateOne(
+      { 
+        user_id: req.params.uid,
+        id: req.params.mid  // Match by id field (which is what you're sending)
+      },
+      { $set: { unread: false } }
+    );
  
-  console.log('Update result:', result);
+    console.log('Update result:', result);
  
-  if (result.modifiedCount > 0) {
-    console.log('Publishing message-read to Ably');
-    ably.channels.get(`user-${req.params.uid}`).publish("message-read", {
-      messageId: req.params.mid,
-      _id: req.params.mid,
-      id: req.params.mid,
-      readAt: Date.now()
-    }).catch(err => console.error("Ably publish error:", err));
-  } else {
-    console.log('No messages matched for read update');
+    if (result.modifiedCount > 0) {
+      console.log('Publishing message-read to Ably');
+      ably.channels.get(`user-${req.params.uid}`).publish("message-read", {
+        messageId: req.params.mid,
+        id: req.params.mid,
+        readAt: Date.now()
+      }).catch(err => console.error("Ably publish error:", err));
+      
+      res.json({ message: "Marked as read", modified: result.modifiedCount });
+    } else {
+      console.log('No messages matched for read update');
+      res.json({ message: "Message not found or already read", modified: 0 });
+    }
+  } catch (err) {
+    console.error('Error marking message as read:', err);
+    res.status(500).json({ error: "Failed to mark as read", details: err.message });
   }
- 
-  res.json({ message: "Marked as read", modified: result.modifiedCount });
 });
  
 
