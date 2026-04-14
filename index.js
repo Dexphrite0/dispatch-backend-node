@@ -168,6 +168,58 @@ app.post("/api/set-role", async (req, res) => {
   res.json({ message: `Role set to ${role}` });
 });
 
+app.post("/api/google-auth", async (req, res) => {
+  const { email, firstName, lastName, googleId } = req.body;
+  if (!email || !googleId) return res.status(400).json({ error: "Missing fields" });
+
+  try {
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      // New user — create account
+      const now = Date.now();
+      user = await User.create({
+        firstName: firstName || "User",
+        lastName: lastName || "",
+        email,
+        password: await bcrypt.hash(googleId, 4), // use googleId as placeholder password
+        createdAt: now,
+      });
+
+      const userId = user._id.toString();
+
+      await Message.create({
+        user_id: userId,
+        id: "welcome-email",
+        from: "Dispatch Team",
+        subject: "Welcome to Dispatch! 🎉",
+        preview: "Get started with your dashboard",
+        body: "Welcome to Dispatch!\nThank you for creating your account.\n\nBest regards,\nThe Dispatch Team",
+        timestamp: "just now",
+        createdAt: now,
+        unread: true,
+        starred: false,
+        role: "admin",
+        isWelcome: true,
+      });
+    }
+
+    const userId = user._id.toString();
+
+    res.json({
+      message: "Google auth successful",
+      user_id: userId,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role || null, // null = no role yet, frontend will send to role picker
+    });
+  } catch (err) {
+    console.error("Google auth error:", err);
+    res.status(500).json({ error: "Google auth failed" });
+  }
+});
+
 // ── Online status ─────────────────────────────────────────────────────────
 app.post("/api/user/:id/online", async (req, res) => {
   await User.updateOne({ _id: req.params.id }, { $set: { online: true } }).catch(() => {});
