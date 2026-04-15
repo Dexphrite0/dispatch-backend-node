@@ -6,6 +6,16 @@ const bcrypt = require("bcrypt");
 const Ably = require("ably");
 const cloudinary = require("cloudinary").v2;
 
+const { OAuth2Client } = require("google-auth-library");
+
+const oauthClient = new OAuth2Client(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  "https://dispatch-backend-node.onrender.com/api/google-auth/callback"
+);
+
+const oauthSessions = new Map();
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key:    process.env.CLOUDINARY_API_KEY,
@@ -218,6 +228,84 @@ app.post("/api/google-auth", async (req, res) => {
     console.error("Google auth error:", err);
     res.status(500).json({ error: "Google auth failed" });
   }
+});
+
+app.get("/api/google-auth/start", (req, res) => {
+  const { session } = req.query;
+  const url = oauthClient.generateAuthUrl({
+    access_type: "offline",
+    scope: ["profile", "email"],
+    state: session,
+  });
+  res.redirect(url);
+});
+
+app.get("/api/google-auth/callback", async (req, res) => {
+  const { code, state: session } = req.query;
+  try {
+    const { tokens } = await oauthClient.getToken(code);
+    oauthClient.setCredentials(tokens);
+    const ticket = await oauthClient.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    const { email, given_name, family_name, sub: googleId } = payload;
+
+    let user = await User.findOne({ email });
+    if (!user) {
+      const now = Date.now();
+      user = await User.create({
+        firstName: given_name || "User",
+        lastName: family_name || "",
+        email,
+        password: await bcrypt.hash(googleId, 4),
+        createdAt: now,
+      });
+      await Message.create({
+        user_id: user._id.toString(),
+        id: "welcome-email",
+        from: "Dispatch Team",
+        subject: "Welcome to Dispatch! 🎉",
+        preview: "Get started with your dashboard",
+        body: "Welcome to Dispatch!\nThank you for creating your account.\n\nBest regards,\nThe Dispatch Team",
+        timestamp: "just now",
+        createdAt: now,
+        unread: true,
+        starred: false,
+        role: "admin",
+        isWelcome: true,
+      });
+    }
+
+    oauthSessions.set(session, {
+      user_id: user._id.toString(),
+      role: user.role || null,
+    });
+    setTimeout(() => oauthSessions.delete(session), 300000);
+
+    res.send(`
+      <html><body style="background:#0a0a0a;color:white;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+        <div style="text-align:center">
+          <h2>✓ Signed in successfully</h2>
+          <p style="opacity:0.6">You can close this tab and return to Dispatch.</p>
+        </div>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error("OAuth callback error:", err);
+    res.status(500).send("Authentication failed.");
+  }
+});
+
+app.get("/api/google-auth/result", (req, res) => {
+  const { session } = req.query;
+  const result = oauthSessions.get(session);
+  if (result) {
+    oauthSessions.delete(session);
+    return res.json(result);
+  }
+  res.json({});
 });
 
 // ── Online status ─────────────────────────────────────────────────────────
