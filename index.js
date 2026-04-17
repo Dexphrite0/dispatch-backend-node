@@ -15,6 +15,7 @@ const oauthClient = new OAuth2Client(
 );
 
 const oauthSessions = new Map();
+const processingCodes = new Set();
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -242,6 +243,27 @@ app.get("/api/google-auth/start", (req, res) => {
 
 app.get("/api/google-auth/callback", async (req, res) => {
   const { code, state: session } = req.query;
+
+  // Already done — just show success
+  if (oauthSessions.has(session)) {
+    return res.send(`
+      <html><body style="background:#0a0a0a;color:white;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+        <div style="text-align:center">
+          <h2>✓ Signed in successfully</h2>
+          <p style="opacity:0.6">You can close this tab and return to Dispatch.</p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  // Code already being processed — ignore duplicate hit
+  if (processingCodes.has(code)) {
+    return res.send(`<html><body style="background:#0a0a0a;color:white;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><p style="opacity:0.6">Processing...</p></div></body></html>`);
+  }
+
+  processingCodes.add(code);
+  setTimeout(() => processingCodes.delete(code), 30000);
+
   try {
     const { tokens } = await oauthClient.getToken(code);
     oauthClient.setCredentials(tokens);
